@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "FSMState.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
@@ -24,6 +26,20 @@ public:
         }
 
         env->robot->update();
+
+        // kaon fork addition (#192): CtrlFSM::run_() calls this state's run() on its
+        // very next 1kHz tick right after enter() returns, and run() reads
+        // env->action_manager->processed_actions() -- but that's only ever set inside
+        // env->step(), which the policy thread spawned below doesn't reach until after
+        // env->reset() plus a full observation-compute + ONNX-inference pass. Without
+        // waiting for it, run() sends whatever processed_actions() holds pre-first-step
+        // as a *position* target under the kp/kd gains just set above. Confirmed
+        // empirically: 100% reproducible bad_orientation trip back to Passive within
+        // ~1ms of every single FixStand->Velocity transition, identical timing
+        // regardless of mass/friction -- a software race, not a balance failure. Block
+        // enter() on the first real step so run()'s first call sees a genuine action.
+        first_step_done_ = false;
+
         // Start policy thread
         policy_thread_running = true;
         policy_thread = std::thread([this]{
@@ -34,16 +50,21 @@ public:
             // Initialize timing
             auto sleepTill = clock::now() + dt;
             env->reset();
+            env->step();
+            first_step_done_ = true;
 
             while (policy_thread_running)
             {
-                env->step();
-
                 // Sleep
                 std::this_thread::sleep_until(sleepTill);
                 sleepTill += dt;
+
+                env->step();
             }
         });
+        while (!first_step_done_) {
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
     }
 
     void run();
@@ -61,6 +82,7 @@ private:
 
     std::thread policy_thread;
     bool policy_thread_running = false;
+    std::atomic<bool> first_step_done_{false};
 };
 
 REGISTER_FSM(State_RLBase)
