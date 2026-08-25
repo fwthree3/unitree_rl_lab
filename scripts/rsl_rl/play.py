@@ -56,7 +56,12 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+# NOTE: isaaclab.utils.pretrained_checkpoint doesn't exist in isaaclab==2.3.2.post1
+# (version mismatch with whatever isaaclab version this script was written against).
+# Only needed for --use_pretrained_checkpoint (downloads a published checkpoint),
+# which we don't use -- we pass --checkpoint directly. Commented out rather than
+# worked around, since the feature itself is unused here.
+# from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
 from isaaclab_tasks.utils import get_checkpoint_path
 

@@ -15,6 +15,15 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/../../include/
 )
 
+
+# Force the linker to resolve -lddsc/-lddscxx from unitree_sdk2's bundled
+# CycloneDDS build first. apt's cyclonedds-dev also installs a libddsc.so in
+# /usr/lib/x86_64-linux-gnu, which is on the default search path *before*
+# /usr/local/lib -- picking that one up here instead loads two ABI-incompatible
+# CycloneDDS cores in the same process and corrupts the heap at runtime
+# ("free(): invalid pointer").
+link_directories(/usr/local/lib)
+
 link_libraries(
   unitree_sdk2 ddsc ddscxx rt pthread # dds
   libboost_program_options.a libyaml-cpp.a fmt
