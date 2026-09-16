@@ -178,11 +178,46 @@ def feet_gait(
     sensor_cfg: SceneEntityCfg,
     threshold: float = 0.5,
     command_name=None,
+    threshold_run: float | None = None,
+    run_transition_speed: float | None = None,
+    run_transition_width: float = 0.5,
+    period_run: float | None = None,
 ) -> torch.Tensor:
+    """Reward matching a fixed-phase-clock stance/swing pattern.
+
+    With `threshold_run`/`run_transition_speed` set (Run B, M1.2/#11), the stance/swing
+    threshold blends from `threshold` (walk, e.g. 0.55 -- no window where both feet are
+    simultaneously swing, i.e. no flight phase) down to `threshold_run` (e.g. <0.5 --
+    opens a real double-swing/flight-phase window) as the *commanded* speed crosses
+    `run_transition_speed`, ramped linearly over `run_transition_width` around it. Below
+    the ramp (or if these args are left None), behavior is identical to the original
+    fixed-threshold walk-only gait.
+
+    `period_run` (Run D, M1.2/#11) additionally blends the gait-clock `period` itself
+    down toward `period_run` over the same speed ramp -- Run B/C only shortened the
+    stance/swing *threshold*, but left cadence fixed at the walking `period` regardless
+    of speed. Real walk->run transitions shorten stride *time* (higher cadence), not just
+    lengthen stride; leaving `period` fixed may have been forcing "faster walking within
+    a fixed-cadence clock" as the only reward-compliant way to go faster, rather than
+    actually inducing a shorter-ground-contact running cadence. Left None, behavior is
+    unchanged (period stays fixed at `period` regardless of speed).
+    """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     is_contact = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] > 0
 
-    global_phase = ((env.episode_length_buf * env.step_dt) % period / period).unsqueeze(1)
+    if threshold_run is not None and run_transition_speed is not None:
+        cmd = env.command_manager.get_command(command_name)
+        speed = torch.norm(cmd[:, :2], dim=1)
+        blend = torch.clamp(
+            (speed - (run_transition_speed - run_transition_width / 2)) / run_transition_width, 0.0, 1.0
+        )
+        dynamic_threshold = threshold * (1 - blend) + threshold_run * blend  # (num_envs,), per-env
+        dynamic_period = period * (1 - blend) + period_run * blend if period_run is not None else period
+    else:
+        dynamic_threshold = threshold  # scalar, same for all envs
+        dynamic_period = period
+
+    global_phase = ((env.episode_length_buf * env.step_dt) % dynamic_period / dynamic_period).unsqueeze(-1)
     phases = []
     for offset_ in offset:
         phase = (global_phase + offset_) % 1.0
@@ -191,7 +226,7 @@ def feet_gait(
 
     reward = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
     for i in range(len(sensor_cfg.body_ids)):
-        is_stance = leg_phase[:, i] < threshold
+        is_stance = leg_phase[:, i] < dynamic_threshold
         reward += ~(is_stance ^ is_contact[:, i])
 
     if command_name is not None:

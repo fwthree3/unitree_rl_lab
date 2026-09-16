@@ -34,7 +34,7 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     // finding, not a harness bug. Keep at 0.5 for the actual mass/friction/delay/noise
     // sweep so falls there are attributable to the perturbation being swept, not to
     // also pushing the baseline policy's own edge at the same time.
-    static float kMidFrac = 0.5f;
+    static float kMidFrac = 1.0f;
     static float vx_max = kMidFrac * cfg["lin_vel_x"][1].as<float>();
     static float vx_min = kMidFrac * cfg["lin_vel_x"][0].as<float>();
     static float vy_max = kMidFrac * cfg["lin_vel_y"][1].as<float>();

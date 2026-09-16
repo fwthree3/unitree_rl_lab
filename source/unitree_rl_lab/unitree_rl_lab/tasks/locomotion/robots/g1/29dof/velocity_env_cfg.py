@@ -171,7 +171,7 @@ class CommandsCfg:
             lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
+            lin_vel_x=(-0.5, 3.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
         ),
     )
 
@@ -305,6 +305,24 @@ class RewardsCfg:
             "threshold": 0.55,
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*"),
+            # Run B (M1.2/#11): relax flight-phase suppression above the human
+            # walk-run transition speed (~2.0 m/s, Froude ~0.5 -- standard
+            # biomechanics literature value; not in
+            # docs/notes/human-joint-kinetics-reference-260829.md, which covers
+            # joint torque/power, not gait-transition speed). threshold_run=0.4
+            # opens a real double-swing (both-feet-off-ground) window; ramped
+            # over run_transition_width so the reward doesn't jump discontinuously.
+            "threshold_run": 0.4,
+            "run_transition_speed": 2.0,
+            "run_transition_width": 0.5,
+            # Run D (M1.2/#11): Run B/C's threshold-only relaxation plateaued (~2% flight-phase
+            # steps, flat across 25k-44k iterations) with a "mincing fast walk" instead of
+            # running -- period was left fixed at the walking cadence (0.8s) regardless of
+            # speed, which may have been forcing stride-length-only scaling instead of the
+            # higher-cadence/shorter-ground-contact-time shift real running actually needs.
+            # period_run=0.55 shortens the gait cycle in the same speed band the threshold
+            # already relaxes in.
+            "period_run": 0.55,
         },
     )
     feet_slide = RewTerm(
@@ -404,3 +422,23 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 10
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# M1.11/#206 toy check: does adding the waist F/T signal to the policy's observations
+# break anything in the training pipeline? Not a real policy, not used by M1.2's Run
+# A/B/C -- separate task id so it can't collide with or accidentally affect them.
+@configclass
+class WaistFTToyObservationsCfg(ObservationsCfg):
+    @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        waist_force_torque = ObsTerm(
+            func=mdp.waist_force_torque,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="torso_link")},
+        )
+
+    policy: PolicyCfg = PolicyCfg()
+
+
+@configclass
+class WaistFTToyEnvCfg(RobotEnvCfg):
+    observations: WaistFTToyObservationsCfg = WaistFTToyObservationsCfg()
