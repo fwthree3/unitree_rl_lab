@@ -171,7 +171,14 @@ class CommandsCfg:
             lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 3.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
+            # Run D update (M1.2/#11, 2026-09-17): raised from (-0.5, 3.0) to push past
+            # the ambiguous "fast mincing walk vs real run" boundary near 3.0 m/s and force
+            # an unambiguous flight-phase gait. Curriculum (lin_vel_cmd_levels) only expands
+            # into this range while tracking reward stays high, so an unreachable ceiling
+            # just caps out naturally rather than forcing bad behavior. Actuator sizing
+            # (M1.4) should still pull torque/velocity data from the ~2.5-3.0 m/s operating
+            # point, not this full range -- this ceiling is a training aid, not the target.
+            lin_vel_x=(-1.0, 10.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
         ),
     )
 
@@ -194,11 +201,21 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, noise=Unoise(n_min=-0.2, n_max=0.2))
+        # clip bounds (2026-09-19, M1.2/#11 crash investigation): a rare PhysX contact
+        # glitch can produce one extreme velocity value in one of 4096 envs; unclipped,
+        # it feeds straight into this forward pass and can produce a NaN/invalid action
+        # std (the recurring CUDA assert crash). Bounds are generous -- well past any
+        # legitimate value even at the widened 10 m/s command range -- so normal
+        # operation is untouched; only the outlier tail gets clamped.
+        base_ang_vel = ObsTerm(
+            func=mdp.base_ang_vel, scale=0.2, noise=Unoise(n_min=-0.2, n_max=0.2), clip=(-20.0, 20.0)
+        )
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5))
+        joint_vel_rel = ObsTerm(
+            func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5), clip=(-30.0, 30.0)
+        )
         last_action = ObsTerm(func=mdp.last_action)
         # gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
 
@@ -214,12 +231,12 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         """Observations for critic group."""
 
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2)
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-15.0, 15.0))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-20.0, 20.0))
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-30.0, 30.0))
         last_action = ObsTerm(func=mdp.last_action)
         # gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
         # height_scanner = ObsTerm(func=mdp.height_scan,
