@@ -16,6 +16,11 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
+        # "scalar" (rsl_rl's default) optimizes the action-distribution std as a raw,
+        # unconstrained parameter -- an ordinary Adam step can push it negative, which
+        # trips torch.distributions.Normal's "std >= 0.0" CUDA assert. "log" optimizes
+        # log(std) instead (exp'd before use), which is positive for any finite value.
+        noise_std_type="log",
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",

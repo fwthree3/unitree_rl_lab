@@ -415,6 +415,14 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
+        # Experimental (re-applied 2026-10-01, layered on top of the noise_std_type="log"
+        # fix): the log-std fix alone didn't eliminate the crash (2 post-fix crashes, both
+        # with a clean log_std at the last save -- pointing to a real NaN-producing event
+        # upstream of the std parameter, most likely a rare PhysX contact/velocity glitch).
+        # This targets exactly that: more velocity-solver iterations + per-iteration external
+        # force refresh, aimed at noisy contact-driven velocities at high running speed.
+        self.sim.physx.enable_external_forces_every_iteration = True
+        self.sim.physx.solver_type = 1  # TGS -- required for the flag above to take effect
 
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
