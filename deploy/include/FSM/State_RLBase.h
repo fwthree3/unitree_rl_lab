@@ -27,7 +27,7 @@ public:
 
         env->robot->update();
 
-        // kaon fork addition (#192): CtrlFSM::run_() calls this state's run() on its
+        // kairn fork addition (#192): CtrlFSM::run_() calls this state's run() on its
         // very next 1kHz tick right after enter() returns, and run() reads
         // env->action_manager->processed_actions() -- but that's only ever set inside
         // env->step(), which the policy thread spawned below doesn't reach until after

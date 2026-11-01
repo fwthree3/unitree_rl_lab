@@ -16,7 +16,7 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     std::string key = FSMState::keyboard->key();
     static auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
 
-    // kaon fork addition (#192): each key used to send a hardcoded +-1.0 regardless of
+    // kairn fork addition (#192): each key used to send a hardcoded +-1.0 regardless of
     // what the policy was actually trained on. cfg here (deploy.yaml's own
     // commands.base_velocity.ranges) already reflects the full trained curriculum
     // envelope at export time -- e.g. lin_vel_y only ever reached +-0.3 -- so a raw
@@ -30,14 +30,14 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     // near the low end and only reaches limit_ranges as the curriculum expands, so the
     // ceiling is plausibly under-trained relative to a typical/representative speed --
     // exercising it should be a deliberate, separate probe, not the default "walk" test.
-    // kaon fork addition (#192): 0.5 confirmed empirically -- v1_model40500 completes
+    // kairn fork addition (#192): 0.5 confirmed empirically -- v1_model40500 completes
     // all sim2sim probes cleanly at this fraction of the trained envelope, but reliably
     // falls partway through a sustained *forward* command at the full trained max
     // (kMidFrac=1.0, A/B tested this session) -- a real, reproducible speed-ceiling
     // finding, not a harness bug. Keep at 0.5 for the actual mass/friction/delay/noise
     // sweep so falls there are attributable to the perturbation being swept, not to
     // also pushing the baseline policy's own edge at the same time.
-    // kaon fork addition (2026-09-21): lin_vel_x's own fraction, separate from
+    // kairn fork addition (2026-09-21): lin_vel_x's own fraction, separate from
     // kMidFrac below. Speed-swept model_82500.pt in Isaac (check_speed_and_flight.py,
     // 10 episodes/speed, CPU to avoid contending with concurrent training GPU use):
     // survival rate ~90% at 2 m/s, ~75% at 3 m/s, then a cliff to ~35-49% at 4-6 m/s,
@@ -68,7 +68,7 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
         target_cmd = key_commands[key];
     }
 
-    // kaon fork addition: rate-limit toward target_cmd instead of stepping to it
+    // kairn fork addition: rate-limit toward target_cmd instead of stepping to it
     // instantly (this used to be the TODO above). A single keypress used to jump
     // e.g. vx from 0 to the full trained ceiling (now 10 m/s) in one 0.02s tick --
     // a physically nonsensical instantaneous target that reliably threw the robot
@@ -89,7 +89,7 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
         cmd[i] += std::clamp(diff, -step, step);
     }
 
-    // kaon fork addition: dump the commanded velocity so an external monitor
+    // kairn fork addition: dump the commanded velocity so an external monitor
     // (examples/print_sim_velocity.py) can print it next to the actual
     // MuJoCo-measured speed -- this is the only place the command exists,
     // it's never otherwise published anywhere. Reopen with trunc every tick
