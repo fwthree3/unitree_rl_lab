@@ -621,3 +621,61 @@ class KairnLegsAscendPlayEnvCfg(KairnLegsAscendEnvCfg):
         self.scene.terrain.terrain_generator.num_cols = 10
         self.scene.terrain.max_init_terrain_level = None
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# M1b.1/#18 (2026-11-11): perceptive Ascend. Blind stair climbing has a hard limit (the
+# policy can only assume flat ground until a foot hits something), so the policy gets a
+# height scan -- with a perception-error model, since on hardware the scan comes from an
+# estimated elevation map, never ground truth. Separate obs groups (no history) so the
+# existing policy/critic inputs keep their layout and P003 can be warm-started by
+# zero-padding the first layer (scripts/rsl_rl/expand_obs_checkpoint.py).
+@configclass
+class PerceptiveObservationsCfg(ObservationsCfg):
+    @configclass
+    class HeightScanCfg(ObsGroup):
+        height_scan = ObsTerm(
+            func=mdp.noisy_height_scan,
+            params={
+                "sensor_cfg": SceneEntityCfg("height_scanner"),
+                "bias_z": 0.05,  # map drift, m
+                "shift_xy": 0.05,  # localization error, m
+                "noise_std": 0.02,  # per-cell, m
+                "p_missing": 0.05,
+                "p_outlier": 0.01,
+                "outlier_mag": 0.3,
+                "max_delay": 2,  # policy steps (0-40 ms)
+                "p_blackout": 0.05,  # episodes with no map at all
+            },
+        )
+
+        def __post_init__(self):
+            self.concatenate_terms = True
+            self.enable_corruption = True
+
+    @configclass
+    class HeightScanCleanCfg(ObsGroup):
+        height_scan = ObsTerm(
+            func=mdp.height_scan, params={"sensor_cfg": SceneEntityCfg("height_scanner")}, clip=(-1.0, 1.0)
+        )
+
+        def __post_init__(self):
+            self.concatenate_terms = True
+
+    height_scan: HeightScanCfg = HeightScanCfg()
+    height_scan_clean: HeightScanCleanCfg = HeightScanCleanCfg()
+
+
+@configclass
+class KairnLegsAscendPerceptiveEnvCfg(KairnLegsAscendEnvCfg):
+    observations: PerceptiveObservationsCfg = PerceptiveObservationsCfg()
+
+
+@configclass
+class KairnLegsAscendPerceptivePlayEnvCfg(KairnLegsAscendPerceptiveEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 5
+        self.scene.terrain.terrain_generator.num_cols = 10
+        self.scene.terrain.max_init_terrain_level = None
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges

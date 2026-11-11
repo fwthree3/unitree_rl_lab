@@ -47,3 +47,12 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class PerceptivePPORunnerCfg(BasePPORunnerCfg):
+    """M1b.1 perceptive Ascend: actor gets the noisy height scan, critic the clean one.
+    Height-scan groups are appended after the proprioceptive ones (layout-compatible with
+    BasePPORunnerCfg checkpoints after zero-padding the first layer)."""
+
+    obs_groups = {"policy": ["policy", "height_scan"], "critic": ["critic", "height_scan_clean"]}
