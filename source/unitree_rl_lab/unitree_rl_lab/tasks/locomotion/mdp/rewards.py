@@ -28,6 +28,23 @@ def energy(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("r
     return torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=-1)
 
 
+def torque_soft_limit(
+    env: ManagerBasedRLEnv, soft_ratio: float = 0.7, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize torque demand above a fraction of each joint's effort limit (M1b.0/#252).
+
+    Uses the pre-clip PD demand (``computed_torque``), so demand the actuator would clip
+    still gets penalized. Per joint: relu(|tau| / limit - soft_ratio)^2, summed. Zero
+    below ``soft_ratio * limit``, so normal-range torque is untouched; it only pushes
+    peaks back toward a margin below the actuator's peak rating.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    tau = asset.data.computed_torque[:, asset_cfg.joint_ids].abs()
+    limit = asset.data.joint_effort_limits[:, asset_cfg.joint_ids]
+    excess = torch.clamp(tau / limit - soft_ratio, min=0.0)
+    return torch.sum(torch.square(excess), dim=-1)
+
+
 def stand_still(
     env: ManagerBasedRLEnv, command_name: str = "base_velocity", asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -182,8 +199,11 @@ def feet_gait(
     run_transition_speed: float | None = None,
     run_transition_width: float = 0.5,
     period_run: float | None = None,
+    track_gate_std: float | None = None,
 ) -> torch.Tensor:
     """Reward matching a fixed-phase-clock stance/swing pattern.
+
+    `track_gate_std` (M1b.1 Ascend, default None = unchanged): see _tracking_gate.
 
     With `threshold_run`/`run_transition_speed` set (Run B, M1.2/#11), the stance/swing
     threshold blends from `threshold` (walk, e.g. 0.55 -- no window where both feet are
@@ -232,7 +252,25 @@ def feet_gait(
     if command_name is not None:
         cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
         reward *= cmd_norm > 0.1
+    if track_gate_std is not None:
+        reward = reward * _tracking_gate(env, command_name or "base_velocity", track_gate_std)
     return reward
+
+
+def _tracking_gate(env: ManagerBasedRLEnv, command_name: str, std: float) -> torch.Tensor:
+    """exp(-|v_cmd_xy - v_base_xy|^2 / std^2), in (0, 1].
+
+    M1b.1/#20 (2026-11-11): on Ascend, feet_clearance (1.0 when the feet are still) +
+    gait (stepping in place matches the clock) + alive outweighed velocity tracking, and
+    two runs collapsed into standing/stepping in place under a non-zero command. Gating
+    these style terms by tracking quality keeps them for real walking and removes the
+    free bonus, without making the per-step reward negative (which would reward falling,
+    since there is no termination penalty).
+    """
+    asset: Articulation = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)[:, :2]
+    err = torch.sum(torch.square(cmd - asset.data.root_lin_vel_b[:, :2]), dim=1)
+    return torch.exp(-err / std**2)
 
 
 """
@@ -258,3 +296,35 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
     return reward
+
+
+def foot_clearance_reward_terrain(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    target_height: float,
+    std: float,
+    tanh_mult: float,
+    track_gate_std: float | None = None,
+    command_name: str = "base_velocity",
+) -> torch.Tensor:
+    """foot_clearance_reward with the target measured from the local terrain (M1b.1 Ascend).
+
+    `track_gate_std`: see _tracking_gate. The exp form returns its maximum (1.0) when
+    the feet do not move horizontally, so standing still earns the full term.
+
+    Ground height = mean of the height scanner's ray hits around the torso, so on flat
+    ground this equals foot_clearance_reward exactly; on stairs/slopes the target follows
+    the terrain instead of world z = 0.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+    ground = torch.nan_to_num(sensor.data.ray_hits_w[..., 2], nan=0.0, posinf=0.0, neginf=0.0).mean(dim=1, keepdim=True)
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - ground
+    foot_z_target_error = torch.square(foot_z - target_height)
+    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    reward = foot_z_target_error * foot_velocity_tanh
+    out = torch.exp(-torch.sum(reward, dim=1) / std)
+    if track_gate_std is not None:
+        out = out * _tracking_gate(env, command_name, track_gate_std)
+    return out

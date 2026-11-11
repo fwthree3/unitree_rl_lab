@@ -19,11 +19,17 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_KAIRN_LEGS_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
-    border_width=20.0,
+    # M1b.0/#252 (2026-11-10): was 20.0. With a 20 m border, an env spawned on an edge
+    # tile has only ~24 m of ground in the worst direction, i.e. <10 s at Run speed
+    # (2.5 m/s) in a 20 s episode. A 1,000-episode eval of model_74000 at 2.5-3.0 m/s
+    # showed 262/262 "falls" were the robot running off the terrain edge (0 falls in
+    # the first 9 s; 100% success on an infinite plane). 80 m covers 20 s at 4 m/s.
+    border_width=80.0,
     num_rows=9,
     num_cols=21,
     horizontal_scale=0.1,
@@ -178,7 +184,12 @@ class CommandsCfg:
             # just caps out naturally rather than forcing bad behavior. Actuator sizing
             # (M1.4) should still pull torque/velocity data from the ~2.5-3.0 m/s operating
             # point, not this full range -- this ceiling is a training aid, not the target.
-            lin_vel_x=(-1.0, 10.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
+            # M1b.0/#252 (2026-11-10): upper bound 10.0 -> 3.5. The 10 m/s ceiling was a
+            # training aid to force a flight-phase gait (now established); uniformly
+            # sampled, it left only ~4.5% of commands in the 2.5-3.0 m/s Run band, and
+            # actual speed undershoots that band by 0.1-0.4 m/s. 3.5 gives margin above
+            # the band while concentrating samples on it (~11%).
+            lin_vel_x=(-1.0, 3.5), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
         ),
     )
 
@@ -415,14 +426,14 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
-        # Experimental (re-applied 2026-10-01, layered on top of the noise_std_type="log"
-        # fix): the log-std fix alone didn't eliminate the crash (2 post-fix crashes, both
-        # with a clean log_std at the last save -- pointing to a real NaN-producing event
-        # upstream of the std parameter, most likely a rare PhysX contact/velocity glitch).
-        # This targets exactly that: more velocity-solver iterations + per-iteration external
-        # force refresh, aimed at noisy contact-driven velocities at high running speed.
-        self.sim.physx.enable_external_forces_every_iteration = True
-        self.sim.physx.solver_type = 1  # TGS -- required for the flag above to take effect
+        # Reverted 2026-10-03: the enable_external_forces_every_iteration=True +
+        # solver_velocity_iteration_count=6 PhysX re-layering (applied 2026-10-01 on top
+        # of the noise_std_type="log" fix, aimed at the same suspected contact/velocity
+        # NaN source) was followed by a run of 6 consecutive sub-20s instant-crash-on-resume
+        # failures across multiple different checkpoints (94400, 94500), which is a
+        # qualitatively different and much worse failure mode than anything seen before
+        # or during the ~29-crash combo history. Reverting to isolate whether this
+        # layering is itself the cause before re-attempting it.
 
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
@@ -467,3 +478,146 @@ class WaistFTToyObservationsCfg(ObservationsCfg):
 @configclass
 class WaistFTToyEnvCfg(RobotEnvCfg):
     observations: WaistFTToyObservationsCfg = WaistFTToyObservationsCfg()
+
+
+# M1b.0/#252 (2026-11-10): same task, but with Kairn's provisional leg actuators
+# (RS04/RS03 torque + rated-speed limits, see UNITREE_G1_29DOF_KAIRN_LEGS_CFG) and two
+# torque terms. Real-speed re-measurement showed hip pitch / knee peak demand ~119 Nm
+# (RS04 peak 120 Nm) and hip pitch mean |tau| ~44 Nm (RS04 rated 40 Nm); this variant
+# checks whether Run still holds >=95% with the policy shaped to stay inside margin.
+_KAIRN_LEG_JOINTS = [".*_hip_pitch_joint", ".*_hip_roll_joint", ".*_hip_yaw_joint", ".*_knee_joint", ".*_ankle_.*_joint"]
+
+
+@configclass
+class KairnLegsSceneCfg(RobotSceneCfg):
+    robot: ArticulationCfg = UNITREE_G1_29DOF_KAIRN_LEGS_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+
+@configclass
+class KairnLegsRewardsCfg(RewardsCfg):
+    # peaks: zero below 70% of each actuator's peak rating, quadratic above it
+    # (pre-clip demand, so clipped demand is still penalized)
+    leg_torque_soft_limit = RewTerm(
+        func=mdp.torque_soft_limit,
+        weight=-10.0,
+        params={"soft_ratio": 0.7, "asset_cfg": SceneEntityCfg("robot", joint_names=_KAIRN_LEG_JOINTS)},
+    )
+    # continuous load: small L2 on leg torques (targets the ~40 Nm mean hip-pitch bias)
+    leg_torques_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-2.0e-5,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=_KAIRN_LEG_JOINTS)},
+    )
+
+
+@configclass
+class KairnLegsEnvCfg(RobotEnvCfg):
+    scene: KairnLegsSceneCfg = KairnLegsSceneCfg(num_envs=4096, env_spacing=2.5)
+    rewards: KairnLegsRewardsCfg = KairnLegsRewardsCfg()
+
+
+@configclass
+class KairnLegsPlayEnvCfg(KairnLegsEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 2
+        self.scene.terrain.terrain_generator.num_cols = 10
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# M1b.1/#18 Ascend (2026-11-11): walk/run/ascend as ONE policy, same reward, ascend
+# added purely through terrain curriculum (decision recorded on #168 / the
+# policy-unification survey). Blind (proprioception only -- obs unchanged, so it
+# warm-starts from the KairnLegs Run policy). Flat stays ~25% of tiles so Run is retained.
+# Step/box heights stay in the stair/curb range a blind policy can plausibly learn;
+# skill-targets.md's ~40 cm obstacle reference likely needs perception (follow-up).
+ASCEND_TERRAINS_CFG = terrain_gen.TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=80.0,
+    num_rows=10,
+    num_cols=20,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    difficulty_range=(0.0, 1.0),
+    use_cache=False,
+    sub_terrains={
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.25),
+        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.15, step_height_range=(0.05, 0.20), step_width=0.3,
+            platform_width=3.0, border_width=1.0, holes=False,
+        ),
+        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.15, step_height_range=(0.05, 0.20), step_width=0.3,
+            platform_width=3.0, border_width=1.0, holes=False,
+        ),
+        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+            proportion=0.1, grid_width=0.45, grid_height_range=(0.02, 0.15), platform_width=2.0
+        ),
+        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=0.15, noise_range=(0.01, 0.08), noise_step=0.01, border_width=0.25
+        ),
+        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+        ),
+        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+            proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+        ),
+    },
+)
+
+
+@configclass
+class KairnLegsAscendSceneCfg(KairnLegsSceneCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.terrain.terrain_generator = ASCEND_TERRAINS_CFG
+        self.terrain.max_init_terrain_level = 3  # start easy; terrain_levels curriculum climbs
+
+
+@configclass
+class KairnLegsAscendRewardsCfg(KairnLegsRewardsCfg):
+    def __post_init__(self):
+        # same terms/weights as Run; only the height references follow the terrain
+        self.base_height.params["sensor_cfg"] = SceneEntityCfg("height_scanner")
+        self.feet_clearance.func = mdp.foot_clearance_reward_terrain
+        self.feet_clearance.params["sensor_cfg"] = SceneEntityCfg("height_scanner")
+        # M1b.1/#20 (2026-11-11): gate style terms by tracking quality (see rewards._tracking_gate)
+        self.feet_clearance.params["track_gate_std"] = 0.5
+        self.gait.params["track_gate_std"] = 0.5
+
+
+@configclass
+class KairnLegsAscendTerminationsCfg(TerminationsCfg):
+    base_height = DoneTerm(
+        func=mdp.root_height_below_minimum_terrain,
+        params={"minimum_height": 0.2, "sensor_cfg": SceneEntityCfg("height_scanner")},
+    )
+
+
+@configclass
+class KairnLegsAscendEnvCfg(KairnLegsEnvCfg):
+    scene: KairnLegsAscendSceneCfg = KairnLegsAscendSceneCfg(num_envs=4096, env_spacing=2.5)
+    rewards: KairnLegsAscendRewardsCfg = KairnLegsAscendRewardsCfg()
+    terminations: KairnLegsAscendTerminationsCfg = KairnLegsAscendTerminationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # M1b.1/#20 (2026-11-11): full Run command range (-1..3.5 m/s) on stairs/boxes made
+        # the first Ascend run collapse into standing still. Cap lin_vel_x on non-flat tiles
+        # only; flat tiles keep the Run range (and the restored curriculum state).
+        self.commands.base_velocity.class_type = mdp.TerrainCappedVelocityCommand
+        self.commands.base_velocity.capped_lin_vel_x = (-0.5, 1.5)
+        self.commands.base_velocity.uncapped_sub_terrains = ("flat",)
+
+
+@configclass
+class KairnLegsAscendPlayEnvCfg(KairnLegsAscendEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 5
+        self.scene.terrain.terrain_generator.num_cols = 10
+        self.scene.terrain.max_init_terrain_level = None
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges

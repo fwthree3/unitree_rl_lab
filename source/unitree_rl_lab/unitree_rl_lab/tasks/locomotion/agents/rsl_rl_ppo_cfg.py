@@ -14,6 +14,14 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 100
     experiment_name = ""  # same as task name
     empirical_normalization = False
+    # M1b.0/#252 (2026-11-10): bound env-side actions. With clip_actions=None, a few envs
+    # occasionally ran away (Episode_Reward/action_rate -150 .. -4e4 within ~5 iterations of a
+    # resume, mean reward -1.6e6, value loss 1.5e12), then a NaN std tripped the
+    # "normal expects std >= 0" CUDA assert. last_action is fed back into the observation
+    # unclipped, so one large action feeds the next. Normal operation (model_95300, 1,000
+    # episodes, cmd -1..3.5 m/s) peaks at |a| = 6.9 deterministic; 10.0 leaves room for
+    # exploration noise (std ~0.42) and only cuts off the runaway tail.
+    clip_actions = 10.0
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         # "scalar" (rsl_rl's default) optimizes the action-distribution std as a raw,

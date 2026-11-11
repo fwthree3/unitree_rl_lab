@@ -43,7 +43,7 @@ class UnitreeUsdFileCfg(sim_utils.UsdFileCfg):
         max_depenetration_velocity=1.0,
     )
     articulation_props = sim_utils.ArticulationRootPropertiesCfg(
-        enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=6
+        enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=4
     )
 
 
@@ -507,6 +507,51 @@ UNITREE_G1_29DOF_CFG = UnitreeArticulationCfg(
         "right_wrist_pitch_joint",
         "right_wrist_yaw_joint",
     ],
+)
+
+# M1b.0/#252 (2026-11-10): G1 29dof with Kairn's provisionally selected leg actuators
+# (M1.4: RobStride RS04 on hip pitch/roll/yaw, knee, ankle pitch; RS03 on ankle roll).
+# Only the torque/velocity limits change -- PD gains and armature stay at the G1 values
+# the existing policy was trained with. Velocity limits are the vendors' *rated* speeds
+# (RS04 17.5 rad/s, RS03 10.47 rad/s), deliberately conservative: implicit actuators
+# have no torque-speed curve, so a flat cap at rated speed stands in for it.
+# Waist and upper body keep the G1 actuators (out of M1.4's leg-only selection scope).
+UNITREE_G1_29DOF_KAIRN_LEGS_CFG = UNITREE_G1_29DOF_CFG.replace(
+    actuators={
+        "RS04": ImplicitActuatorCfg(
+            joint_names_expr=[".*_hip_pitch_.*", ".*_hip_roll_.*", ".*_hip_yaw_.*", ".*_knee_.*", ".*_ankle_pitch_.*"],
+            effort_limit_sim=120.0,
+            velocity_limit_sim=17.5,
+            stiffness={".*_hip_.*": 100.0, ".*_knee_.*": 150.0, ".*_ankle_pitch_.*": 40.0},
+            damping={".*_hip_.*": 2.0, ".*_knee_.*": 4.0, ".*_ankle_pitch_.*": 2.0},
+            armature=0.01,
+        ),
+        "RS03": ImplicitActuatorCfg(
+            joint_names_expr=[".*_ankle_roll_.*"],
+            effort_limit_sim=60.0,
+            velocity_limit_sim=10.47,
+            stiffness=40.0,
+            damping=2.0,
+            armature=0.01,
+        ),
+        "N7520-14.3": ImplicitActuatorCfg(
+            joint_names_expr=["waist_yaw_joint"],
+            effort_limit_sim=88,
+            velocity_limit_sim=32.0,
+            stiffness=200.0,
+            damping=5.0,
+            armature=0.01,
+        ),
+        "N5020-16": ImplicitActuatorCfg(
+            joint_names_expr=[".*_shoulder_.*", ".*_elbow_.*", ".*_wrist_roll.*", "waist_roll_joint", "waist_pitch_joint"],
+            effort_limit_sim=25,
+            velocity_limit_sim=37,
+            stiffness=40.0,
+            damping={".*_shoulder_.*": 1.0, ".*_elbow_.*": 1.0, ".*_wrist_roll.*": 1.0, "waist_.*_joint": 5.0},
+            armature=0.01,
+        ),
+        "W4010-25": UNITREE_G1_29DOF_CFG.actuators["W4010-25"],
+    },
 )
 
 

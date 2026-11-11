@@ -30,6 +30,14 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+# M1b.0/#252: pin the forward command to a band (e.g. the Run band 2.5-3.0 m/s) for visual checks,
+# instead of the play config's full random range. lin_vel_y/ang_vel_z are zeroed, no standing envs.
+parser.add_argument("--cmd_min", type=float, default=None, help="Min forward velocity command (m/s).")
+parser.add_argument("--ramp_s", type=float, default=0.0,
+                    help="With --cmd_min/--cmd_max: ramp each env's command from 0 over this many seconds after reset.")
+parser.add_argument("--print_vel", action="store_true", default=False,
+                    help="Print commanded vs actual forward speed (body-frame x, ground truth) per env every 0.5 s.")
+parser.add_argument("--cmd_max", type=float, default=None, help="Max forward velocity command (m/s).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -80,6 +88,16 @@ def main():
         entry_point_key="play_env_cfg_entry_point",
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+    if args_cli.cmd_min is not None and args_cli.cmd_max is not None:
+        cmd = env_cfg.commands.base_velocity
+        cmd.ranges.lin_vel_x = (args_cli.cmd_min, args_cli.cmd_max)
+        cmd.ranges.lin_vel_y = (0.0, 0.0)
+        cmd.ranges.ang_vel_z = (0.0, 0.0)
+        cmd.rel_standing_envs = 0.0
+        env_cfg.curriculum.lin_vel_cmd_levels = None
+        if args_cli.ramp_s > 0:
+            cmd.resampling_time_range = (1.0e6, 1.0e6)  # one target per episode, ramped below
+        print(f"[INFO] forward command pinned to U({args_cli.cmd_min}, {args_cli.cmd_max}) m/s")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -163,6 +181,16 @@ def main():
     if version("rsl-rl-lib").startswith("2.3."):
         obs, _ = env.get_observations()
     timestep = 0
+    ramp = args_cli.ramp_s > 0 and args_cli.cmd_min is not None
+    if ramp:
+        uenv = env.unwrapped
+        vel_cmd_term = uenv.command_manager.get_term("base_velocity")
+        ramp_target = vel_cmd_term.vel_command_b[:, 0].clone()
+    if args_cli.print_vel:
+        vel_term_print = env.unwrapped.command_manager.get_term("base_velocity")
+        robot_print = env.unwrapped.scene["robot"]
+        print_every = max(1, round(0.5 / dt))
+        print_step = 0
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -172,6 +200,19 @@ def main():
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+            if ramp:
+                just_reset = uenv.episode_length_buf == 0
+                ramp_target = torch.where(just_reset, vel_cmd_term.vel_command_b[:, 0], ramp_target)
+                frac = torch.clamp((uenv.episode_length_buf + 1) * dt / args_cli.ramp_s, max=1.0)
+                vel_cmd_term.vel_command_b[:, 0] = ramp_target * frac
+        if args_cli.print_vel:
+            print_step += 1
+            if print_step % print_every == 0:
+                cmd_v = vel_term_print.vel_command_b[:, 0].tolist()
+                act_v = robot_print.data.root_lin_vel_b[:, 0].tolist()
+                t_ep = (env.unwrapped.episode_length_buf * dt).tolist()
+                cells = "  ".join(f"#{i} {c:4.2f}->{a:4.2f}" for i, (c, a) in enumerate(zip(cmd_v, act_v)))
+                print(f"[vel m/s cmd->actual] t={t_ep[0]:5.1f}s  {cells}", flush=True)
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video

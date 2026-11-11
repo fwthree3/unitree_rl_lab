@@ -47,7 +47,11 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     // small-range, never the unstable axis) aren't also cut to 30%.
     static float kMidFracLinX = 0.3f;
     static float kMidFrac = 1.0f;
-    static float vx_max = kMidFracLinX * cfg["lin_vel_x"][1].as<float>();
+    // kairn fork addition (M1b.0/#252, 2026-11-10): KAIRN_VX_MAX (m/s) overrides the
+    // "w" forward target directly, so a sim2sim speed test (e.g. 3.0 vs 4.0 m/s) needs
+    // only a g1_ctrl restart, not a rebuild or a deploy.yaml edit. Unset = old behavior.
+    static float vx_max = std::getenv("KAIRN_VX_MAX") ? std::stof(std::getenv("KAIRN_VX_MAX"))
+                                                      : kMidFracLinX * cfg["lin_vel_x"][1].as<float>();
     static float vx_min = kMidFracLinX * cfg["lin_vel_x"][0].as<float>();
     static float vy_max = kMidFrac * cfg["lin_vel_y"][1].as<float>();
     static float vy_min = kMidFrac * cfg["lin_vel_y"][0].as<float>();

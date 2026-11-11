@@ -87,6 +87,7 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
 
 import gymnasium as gym
 import inspect
+import json
 import os
 import shutil
 import torch
@@ -115,6 +116,76 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+# The velocity-command curriculum (curriculums.py's lin_vel_cmd_levels/
+# ang_vel_cmd_levels) mutates env.command_manager's live range config
+# in-place; RSL-RL's checkpoint only saves network weights, not this, so
+# every single --resume (crash-triggered or not -- a brand-new run folder
+# and environment object are created on every launch) silently restarts
+# the velocity range from scratch. Measured impact: ~22min of training
+# only climbs the commanded range from 0.1 to 0.9 m/s, so frequent
+# resumes were preventing training from ever spending sustained time in
+# the higher-speed regime where running/falling behavior actually lives
+# -- the real fix is here, not in reducing crash frequency. Saved as a
+# sidecar JSON next to each checkpoint rather than patching rsl_rl itself
+# (a vendored third-party package) or the checkpoint format.
+CURRICULUM_STATE_FILENAME = "curriculum_state.json"
+_CURRICULUM_RANGE_FIELDS = ("lin_vel_x", "lin_vel_y", "ang_vel_z")
+
+
+def _get_curriculum_state(env) -> dict:
+    ranges = env.unwrapped.command_manager.get_term("base_velocity").cfg.ranges
+    return {field: list(getattr(ranges, field)) for field in _CURRICULUM_RANGE_FIELDS}
+
+
+def _set_curriculum_state(env, state: dict) -> None:
+    ranges = env.unwrapped.command_manager.get_term("base_velocity").cfg.ranges
+    for field in _CURRICULUM_RANGE_FIELDS:
+        if field in state:
+            setattr(ranges, field, state[field])
+
+
+class NonFiniteGuardWrapper(RslRlVecEnvWrapper):
+    """M1b.1/#20 (2026-11-11): keep a NaN/Inf physics state from poisoning PPO.
+
+    The "normal expects std >= 0" CUDA assert came back on rough terrain even with
+    clip_actions=10 and no action/value-loss spike beforehand -- consistent with a rare
+    PhysX glitch producing a non-finite robot state. Observation clipping does not remove
+    NaN, and a NaN state also escapes termination (NaN comparisons are False), so one bad
+    env can push NaN through the batch into the gradient and the weights. Here, any env
+    whose observations, reward or root state are non-finite after a step is zeroed,
+    marked done (non-timeout) and reset immediately. Occurrences are appended to
+    <log_dir>/nonfinite_guard.log so the rate is visible.
+    """
+
+    def __init__(self, env, clip_actions=None, log_dir=None):
+        super().__init__(env, clip_actions=clip_actions)
+        self._guard_log = os.path.join(log_dir, "nonfinite_guard.log") if log_dir else None
+        self._guard_count = 0
+
+    def step(self, actions):
+        obs, rew, dones, extras = super().step(actions)
+        bad = ~torch.isfinite(rew)
+        for key in obs.keys():
+            bad |= ~torch.isfinite(obs[key]).reshape(self.num_envs, -1).all(dim=1)
+        root = self.unwrapped.scene["robot"].data.root_state_w
+        bad |= ~torch.isfinite(root).all(dim=1)
+        if bool(bad.any()):
+            ids = bad.nonzero(as_tuple=False).squeeze(-1)
+            for key in obs.keys():
+                obs[key][ids] = 0.0
+            rew[ids] = 0.0
+            dones[ids] = 1
+            if "time_outs" in extras:
+                extras["time_outs"][ids] = False
+            self.unwrapped._reset_idx(ids)
+            self.unwrapped.scene.write_data_to_sim()
+            self.unwrapped.sim.forward()
+            self._guard_count += len(ids)
+            if self._guard_log:
+                with open(self._guard_log, "a") as f:
+                    f.write(f"step={self.unwrapped.common_step_counter} envs={ids.tolist()} total={self._guard_count}\n")
+        return obs, rew, dones, extras
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -178,17 +249,42 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # wrap around environment for rsl-rl
-    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    env = NonFiniteGuardWrapper(env, clip_actions=agent_cfg.clip_actions, log_dir=log_dir)
 
     # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
+
+    # Piggyback the curriculum-state sidecar write on every checkpoint save
+    # (runner.save() already runs at well-defined iteration intervals, see
+    # on_policy_runner.py) rather than adding a separate per-step hook.
+    _original_save = runner.save
+
+    def _save_with_curriculum_state(path, infos=None):
+        _original_save(path, infos)
+        state = _get_curriculum_state(env)
+        with open(os.path.join(os.path.dirname(path), CURRICULUM_STATE_FILENAME), "w") as f:
+            json.dump(state, f)
+
+    runner.save = _save_with_curriculum_state
+
     # load the checkpoint
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+        curriculum_state_path = os.path.join(os.path.dirname(resume_path), CURRICULUM_STATE_FILENAME)
+        if os.path.exists(curriculum_state_path):
+            with open(curriculum_state_path) as f:
+                curriculum_state = json.load(f)
+            _set_curriculum_state(env, curriculum_state)
+            print(f"[INFO]: Restored velocity-command curriculum state from {curriculum_state_path}: {curriculum_state}")
+        else:
+            print(
+                f"[INFO]: No curriculum-state sidecar at {curriculum_state_path} -- velocity-command range starts "
+                "from velocity_env_cfg.py's configured initial ranges, not a restored value."
+            )
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

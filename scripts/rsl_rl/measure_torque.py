@@ -29,6 +29,9 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Force a speed command and measure per-joint applied torque.")
 parser.add_argument("--task", type=str, default="Unitree-G1-29dof-Velocity", help="Name of the task.")
 parser.add_argument("--command_lin_vel_x", type=float, default=4.0, help="Forced forward velocity command (m/s).")
+parser.add_argument("--ramp_s", type=float, default=0.0,
+                    help="M1b.0/#252: ramp the forced command from 0 over this many seconds after each reset "
+                         "(0 = step command from rest; above ~3 m/s a step command can leave the robot standing).")
 parser.add_argument("--num_episodes", type=int, default=20, help="Total number of episodes to collect (across all envs).")
 parser.add_argument("--num_envs", type=int, default=16,
                      help="Parallel envs -- all step in lockstep, so this multiplies episodes collected per "
@@ -90,7 +93,12 @@ def main():
     vel_cmd_term = env.unwrapped.command_manager.get_term("base_velocity")
 
     def force_command():
-        vel_cmd_term.vel_command_b[:, 0] = args_cli.command_lin_vel_x
+        if args_cli.ramp_s > 0:
+            uenv = env.unwrapped
+            frac = torch.clamp((uenv.episode_length_buf + 1) * uenv.step_dt / args_cli.ramp_s, max=1.0)
+            vel_cmd_term.vel_command_b[:, 0] = args_cli.command_lin_vel_x * frac
+        else:
+            vel_cmd_term.vel_command_b[:, 0] = args_cli.command_lin_vel_x
         vel_cmd_term.vel_command_b[:, 1] = 0.0
         vel_cmd_term.vel_command_b[:, 2] = 0.0
 
