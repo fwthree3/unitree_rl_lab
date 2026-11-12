@@ -90,6 +90,8 @@ def main():
     cmd.ranges.lin_vel_y = (0.0, 0.0)
     cmd.ranges.ang_vel_z = (0.0, 0.0)
     cmd.rel_standing_envs = 0.0
+    if hasattr(cmd, "uncapped_fast_prob"):
+        cmd.uncapped_fast_prob = 0.0  # training-only fast band would override the pinned range
     # resample once per episode only (episode is 20 s; reset always resamples)
     cmd.resampling_time_range = (1.0e6, 1.0e6)
     cmd.debug_vis = False

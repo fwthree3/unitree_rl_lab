@@ -103,6 +103,8 @@ def main():
         cmd.ranges.lin_vel_y = (0.0, 0.0)
         cmd.ranges.ang_vel_z = (0.0, 0.0)
         cmd.rel_standing_envs = 0.0
+        if hasattr(cmd, "uncapped_fast_prob"):
+            cmd.uncapped_fast_prob = 0.0  # training-only fast band would override the pinned range
         env_cfg.curriculum.lin_vel_cmd_levels = None
         if args_cli.ramp_s > 0:
             cmd.resampling_time_range = (1.0e6, 1.0e6)  # one target per episode, ramped below
