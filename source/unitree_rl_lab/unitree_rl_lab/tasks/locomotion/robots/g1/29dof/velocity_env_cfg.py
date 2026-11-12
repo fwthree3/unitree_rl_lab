@@ -696,7 +696,11 @@ class KairnLegsAscendPerceptiveEnvCfg(KairnLegsAscendEnvCfg):
         }.items():
             tg.sub_terrains[name].proportion = prop
         self.commands.base_velocity.uncapped_fast_prob = 0.5
-        self.commands.base_velocity.uncapped_fast_lin_vel_x = (2.5, 4.5)
+        # v2.1 (2026-11-12): 2.5-4.5 -> 2.0-3.5. With 4.5 m/s *step* commands (resampled every
+        # 10 s, no ramp) the training fall rate rose to 0.65 and the 3.0-4.5 ramp eval went
+        # 26% (P004) -> 41% (117300) -> 16% (119300). P003 never trained above 3.5 m/s either;
+        # its 3.6-4.5 m/s eval success was generalization from a 3.5 m/s ceiling.
+        self.commands.base_velocity.uncapped_fast_lin_vel_x = (2.0, 3.5)
 
 
 @configclass
