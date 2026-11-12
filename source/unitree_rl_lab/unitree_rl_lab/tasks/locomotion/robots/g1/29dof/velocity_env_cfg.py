@@ -666,14 +666,44 @@ class PerceptiveObservationsCfg(ObservationsCfg):
 
 
 @configclass
+class PerceptiveCurriculumCfg(CurriculumCfg):
+    # report-only: mean terrain level per sub-terrain (must come after terrain_levels)
+    terrain_levels_by_type = CurrTerm(func=mdp.terrain_levels_by_sub_terrain)
+
+
+@configclass
 class KairnLegsAscendPerceptiveEnvCfg(KairnLegsAscendEnvCfg):
     observations: PerceptiveObservationsCfg = PerceptiveObservationsCfg()
+    curriculum: PerceptiveCurriculumCfg = PerceptiveCurriculumCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # M1b.1/#21 (2026-11-11), from P004 (perceptive 115300) evals:
+        # (A) Run regression -- 3.6-4.5 m/s ramp eval 100% (P003) -> 0%. Half of the flat-tile
+        #     commands are drawn from 2.5-4.5 m/s, and flat tiles go 25% -> 30%.
+        # (B) Stairs/boxes fail at difficulty 1.0 (stairs 8%, inverted stairs 0%, boxes 15%)
+        #     while slopes/rough are solved (92-98%). Shift the column budget to stairs/boxes.
+        tg = self.scene.terrain.terrain_generator = self.scene.terrain.terrain_generator.copy()
+        tg.sub_terrains = {k: v.copy() for k, v in tg.sub_terrains.items()}
+        for name, prop in {
+            "flat": 0.30,
+            "pyramid_stairs": 0.20,
+            "pyramid_stairs_inv": 0.20,
+            "boxes": 0.12,
+            "random_rough": 0.08,
+            "hf_pyramid_slope": 0.05,
+            "hf_pyramid_slope_inv": 0.05,
+        }.items():
+            tg.sub_terrains[name].proportion = prop
+        self.commands.base_velocity.uncapped_fast_prob = 0.5
+        self.commands.base_velocity.uncapped_fast_lin_vel_x = (2.5, 4.5)
 
 
 @configclass
 class KairnLegsAscendPerceptivePlayEnvCfg(KairnLegsAscendPerceptiveEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        self.curriculum.terrain_levels_by_type = None
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 5
         self.scene.terrain.terrain_generator.num_cols = 10

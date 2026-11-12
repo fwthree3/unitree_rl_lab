@@ -35,6 +35,8 @@ parser.add_argument("--real-time", action="store_true", default=False, help="Run
 parser.add_argument("--cmd_min", type=float, default=None, help="Min forward velocity command (m/s).")
 parser.add_argument("--ramp_s", type=float, default=0.0,
                     help="With --cmd_min/--cmd_max: ramp each env's command from 0 over this many seconds after reset.")
+parser.add_argument("--flat", action="store_true", default=False,
+                    help="Make every terrain tile flat (keeps the mesh, so perceptive height-scan tasks still work).")
 parser.add_argument("--print_vel", action="store_true", default=False,
                     help="Print commanded vs actual forward speed (body-frame x, ground truth) per env every 0.5 s.")
 parser.add_argument("--cmd_max", type=float, default=None, help="Max forward velocity command (m/s).")
@@ -88,6 +90,13 @@ def main():
         entry_point_key="play_env_cfg_entry_point",
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+    if args_cli.flat and env_cfg.scene.terrain.terrain_generator is not None:
+        import isaaclab.terrains as terrain_gen
+
+        tg = env_cfg.scene.terrain.terrain_generator
+        tg.sub_terrains = {"flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0)}
+        tg.border_width = 100.0
+        env_cfg.curriculum.terrain_levels = None
     if args_cli.cmd_min is not None and args_cli.cmd_max is not None:
         cmd = env_cfg.commands.base_velocity
         cmd.ranges.lin_vel_x = (args_cli.cmd_min, args_cli.cmd_max)

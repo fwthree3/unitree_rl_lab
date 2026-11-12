@@ -31,10 +31,12 @@ parser.add_argument("--cmd_max", type=float, default=3.0, help="Max forward comm
 parser.add_argument("--no_push", action="store_true", help="Disable interval pushes (diagnostic only, not the criterion).")
 parser.add_argument("--difficulty", type=float, default=0.5,
                     help="--terrain ascend only: every tile at this difficulty (0-1; stairs 5->20 cm, slopes 0->0.4 rad).")
-parser.add_argument("--terrain", choices=["plane", "generator", "ascend"], default="plane",
+parser.add_argument("--terrain", choices=["plane", "generator", "ascend", "flatgrid"], default="plane",
                     help="plane (default): infinite flat ground plane, so a 20 s run at 3 m/s cannot leave the map. "
                          "generator: the training terrain grid (all-flat tiles, ~112x208 m) -- running off its edge "
-                         "shows up as a fall termination, which is a map-size artifact, not a policy failure.")
+                         "shows up as a fall termination, which is a map-size artifact, not a policy failure. "
+                         "flatgrid: the task's generator with every tile flat and a 100 m border -- for tasks whose "
+                         "observations need the height scanner (perceptive), where plane cannot be used.")
 parser.add_argument("--ramp_s", type=float, default=0.0,
                     help="Ramp the forward command linearly from 0 to its sampled value over this many seconds "
                          "(0 = step command from rest, the original criterion). Mimics the deploy-side keyboard ramp.")
@@ -65,6 +67,7 @@ from rsl_rl.runners import OnPolicyRunner
 
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
+import isaaclab.terrains as terrain_gen
 
 
 def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -103,6 +106,12 @@ def main():
         env_cfg.scene.terrain.terrain_type = "plane"
         env_cfg.scene.terrain.terrain_generator = None
         env_cfg.scene.height_scanner = None  # unused by obs/rewards; ray caster needs a mesh, not a ground plane
+    if args_cli.terrain == "flatgrid":
+        # Perceptive tasks: the ray caster needs a mesh, so keep the generator but make every tile flat.
+        tg = env_cfg.scene.terrain.terrain_generator
+        tg.sub_terrains = {"flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0)}
+        tg.border_width = 100.0
+        env_cfg.scene.terrain.max_init_terrain_level = tg.num_rows - 1
     if args_cli.no_push:
         env_cfg.events.push_robot = None
 

@@ -55,7 +55,16 @@ class TerrainCappedVelocityCommand(UniformVelocityCommand):
         capped = self._get_capped_mask()[env_ids]
         lo, hi = getattr(self.cfg, "capped_lin_vel_x", (-0.5, 1.5))
         vx = self.vel_command_b[env_ids, 0]
-        self.vel_command_b[env_ids, 0] = torch.where(capped, vx.clamp(lo, hi), vx)
+        vx = torch.where(capped, vx.clamp(lo, hi), vx)
+        # M1b.1/#21 (2026-11-11): the perceptive Ascend run lost the Run skill (3.6-4.5 m/s
+        # step-ramp eval 100% -> 0%) because >3 m/s commands were ~3% of all samples. On
+        # uncapped (flat) tiles, a fraction of commands is drawn from a fast forward band.
+        p_fast = getattr(self.cfg, "uncapped_fast_prob", 0.0)
+        if p_fast > 0.0:
+            f_lo, f_hi = getattr(self.cfg, "uncapped_fast_lin_vel_x", (2.5, 4.5))
+            fast = (~capped) & (torch.rand_like(vx) < p_fast)
+            vx = torch.where(fast, torch.empty_like(vx).uniform_(f_lo, f_hi), vx)
+        self.vel_command_b[env_ids, 0] = vx
 
 
 @configclass
@@ -63,3 +72,5 @@ class TerrainCappedLevelVelocityCommandCfg(UniformLevelVelocityCommandCfg):
     class_type: type = TerrainCappedVelocityCommand
     capped_lin_vel_x: tuple[float, float] = (-0.5, 1.5)
     uncapped_sub_terrains: tuple[str, ...] = ("flat",)
+    uncapped_fast_prob: float = 0.0
+    uncapped_fast_lin_vel_x: tuple[float, float] = (2.5, 4.5)
