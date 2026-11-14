@@ -701,6 +701,10 @@ class KairnLegsAscendPerceptiveEnvCfg(KairnLegsAscendEnvCfg):
         # 26% (P004) -> 41% (117300) -> 16% (119300). P003 never trained above 3.5 m/s either;
         # its 3.6-4.5 m/s eval success was generalization from a 3.5 m/s ceiling.
         self.commands.base_velocity.uncapped_fast_lin_vel_x = (2.0, 3.5)
+        # v3 (2026-11-14): stairs-up stuck at ~13-15 cm (d1.0 1%, level 4.2-4.8 for 6000 it).
+        # The clearance target was relative to the torso-area mean ground; use the highest
+        # terrain within 15 cm of each foot instead (rewards.foot_clearance_reward_terrain).
+        self.rewards.feet_clearance.params["local_radius"] = 0.15
 
 
 @configclass

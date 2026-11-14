@@ -307,6 +307,7 @@ def foot_clearance_reward_terrain(
     tanh_mult: float,
     track_gate_std: float | None = None,
     command_name: str = "base_velocity",
+    local_radius: float | None = None,
 ) -> torch.Tensor:
     """foot_clearance_reward with the target measured from the local terrain (M1b.1 Ascend).
 
@@ -315,12 +316,25 @@ def foot_clearance_reward_terrain(
 
     Ground height = mean of the height scanner's ray hits around the torso, so on flat
     ground this equals foot_clearance_reward exactly; on stairs/slopes the target follows
-    the terrain instead of world z = 0.
+    the terrain instead of world z = 0. With `local_radius`, ground is per foot (see below).
     """
     asset: RigidObject = env.scene[asset_cfg.name]
     sensor = env.scene[sensor_cfg.name]
-    ground = torch.nan_to_num(sensor.data.ray_hits_w[..., 2], nan=0.0, posinf=0.0, neginf=0.0).mean(dim=1, keepdim=True)
-    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - ground
+    hits = sensor.data.ray_hits_w
+    ground = torch.nan_to_num(hits[..., 2], nan=0.0, posinf=0.0, neginf=0.0).mean(dim=1, keepdim=True)
+    foot_pos = asset.data.body_pos_w[:, asset_cfg.body_ids]
+    if local_radius is not None:
+        # M1b.1/#20 (2026-11-14): per-foot ground = highest scan hit within local_radius of the
+        # foot (xy). The torso-area mean put the target 10 cm above the *average* of the stair
+        # flight, so lifting a foot over a 20 cm riser was penalized; stairs-up stalled at
+        # ~13-15 cm. With the local max, a foot swinging over the next tread is pulled up.
+        valid = torch.isfinite(hits).all(dim=-1)  # (N, R)
+        d = torch.norm(foot_pos[:, :, None, :2] - torch.nan_to_num(hits[:, None, :, :2]), dim=-1)  # (N, F, R)
+        near = (d <= local_radius) & valid[:, None, :]
+        z = torch.where(near, torch.nan_to_num(hits[:, None, :, 2]), torch.full_like(d, -1.0e6))
+        local = z.max(dim=-1).values  # (N, F)
+        ground = torch.where(near.any(dim=-1), local, ground.expand_as(local))
+    foot_z = foot_pos[..., 2] - ground
     foot_z_target_error = torch.square(foot_z - target_height)
     foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
     reward = foot_z_target_error * foot_velocity_tanh
