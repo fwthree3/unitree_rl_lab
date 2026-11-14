@@ -87,3 +87,34 @@ def terrain_levels_by_sub_terrain(env: ManagerBasedRLEnv, env_ids: Sequence[int]
         if bool(m.any()):
             out[name] = levels[m].mean()
     return out
+
+
+def terrain_levels_vel_hold_top(
+    env: ManagerBasedRLEnv, env_ids: Sequence[int], wrap_low_frac: float = 0.5, asset_cfg=None
+) -> torch.Tensor:
+    """M1b.1/#21 v4 (2026-11-14): terrain_levels_vel, but envs that solve the top row are sent back to a
+    random row in the upper part of the grid ([wrap_low_frac * max, max)) instead of anywhere in [0, max).
+
+    With the stock wrap, an env that clears the top row lands on level ~U(0, 9), so the top rows (18-20 cm
+    stairs) get only a thin slice of the episodes once a column is "solved" at mid height. The v3 sweep
+    showed stairs-up success falling smoothly with height (14 cm 89%, 17 cm 51%, 20 cm 0%) with no torque
+    saturation, i.e. an exposure/learning problem rather than an actuator ceiling.
+    Same move-up / move-down rule as isaaclab's terrain_levels_vel.
+    """
+    asset = env.scene["robot"]
+    terrain = env.scene.terrain
+    command = env.command_manager.get_command("base_velocity")
+    distance = torch.norm(asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1)
+    move_up = distance > terrain.cfg.terrain_generator.size[0] / 2
+    move_down = distance < torch.norm(command[env_ids, :2], dim=1) * env.max_episode_length_s * 0.5
+    move_down *= ~move_up
+    if terrain.terrain_origins is None:
+        return torch.mean(terrain.terrain_levels.float())
+    lv = terrain.terrain_levels[env_ids] + 1 * move_up - 1 * move_down
+    top = terrain.max_terrain_level
+    low = min(int(wrap_low_frac * top), top - 1)
+    wrapped = torch.randint_like(lv, low, top)
+    lv = torch.where(lv >= top, wrapped, torch.clip(lv, 0))
+    terrain.terrain_levels[env_ids] = lv
+    terrain.env_origins[env_ids] = terrain.terrain_origins[lv, terrain.terrain_types[env_ids]]
+    return torch.mean(terrain.terrain_levels.float())

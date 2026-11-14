@@ -667,6 +667,8 @@ class PerceptiveObservationsCfg(ObservationsCfg):
 
 @configclass
 class PerceptiveCurriculumCfg(CurriculumCfg):
+    # v4 (2026-11-14): solved-top-row envs wrap to the upper half of the grid, not anywhere (more 18-20 cm stairs)
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_hold_top, params={"wrap_low_frac": 0.5})
     # report-only: mean terrain level per sub-terrain (must come after terrain_levels)
     terrain_levels_by_type = CurrTerm(func=mdp.terrain_levels_by_sub_terrain)
 
