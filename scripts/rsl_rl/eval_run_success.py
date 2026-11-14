@@ -154,6 +154,14 @@ def main():
     ss_speed_sum = torch.zeros(n, device=device)
     ss_steps = torch.zeros(n, device=device)
     dt = uenv.step_dt
+    # torque demand of the sagittal leg joints: per-episode peak computed (pre-clip) torque / effort limit,
+    # and the fraction of steps where the applied torque sits at the limit (>= 99%) -- tells a
+    # hardware (torque) ceiling apart from a learning problem when a terrain fails
+    tq_names = ["hip_pitch", "knee", "ankle_pitch"]
+    tq_ids = {g: [i for i, nm in enumerate(robot.joint_names) if g in nm and ("left" in nm or "right" in nm)] for g in tq_names}
+    eff_lim = robot.data.joint_effort_limits[0] if hasattr(robot.data, "joint_effort_limits") else None
+    tq_peak = {g: torch.zeros(n, device=device) for g in tq_names}
+    tq_sat = {g: torch.zeros(n, device=device) for g in tq_names}
     # half-extent of the walkable terrain (generated grid + flat border), centered at the origin
     tg = env_cfg.scene.terrain.terrain_generator
     if tg is not None:
@@ -187,6 +195,13 @@ def main():
             ss_speed_sum += torch.where(ss, robot.data.root_lin_vel_b[:, 0], 0.0)
             ss_steps += ss.float()
             last_xy = torch.where(active.unsqueeze(-1), robot.data.root_pos_w[:, :2], last_xy)
+            if eff_lim is not None:
+                for g, ids_g in tq_ids.items():
+                    lim = eff_lim[ids_g]
+                    r_comp = (robot.data.computed_torque[:, ids_g].abs() / lim).max(dim=1).values
+                    at_lim = (robot.data.applied_torque[:, ids_g].abs() >= 0.99 * lim).any(dim=1).float()
+                    tq_peak[g] = torch.where(active, torch.maximum(tq_peak[g], r_comp), tq_peak[g])
+                    tq_sat[g] += torch.where(active, at_lim, 0.0)
 
             obs, _, dones, _ = env.step(actions)
             apply_ramp()
@@ -255,6 +270,12 @@ def main():
             if cnt:
                 print(f"[RESULT]   {nm:<22} {int(success[m].sum())}/{cnt} = {100*success[m].float().mean():5.1f}%  "
                       f"mean distance {dist[m].mean():5.1f} m, steady speed {ss_speed[m & success].mean():.2f} m/s")
+                if eff_lim is not None:
+                    parts = []
+                    for g in tq_names:
+                        sat = tq_sat[g] / steps.clamp(min=1)
+                        parts.append(f"{g} peak {tq_peak[g][m].median():.2f}/{tq_peak[g][m].max():.2f} sat {100*sat[m].mean():.1f}%")
+                    print(f"[RESULT]     torque (median/max peak computed/limit, % steps at limit): " + "; ".join(parts))
     # success rate vs commanded speed (5 bins)
     edges = torch.linspace(args_cli.cmd_min, args_cli.cmd_max, 6, device=device)
     for b in range(5):
