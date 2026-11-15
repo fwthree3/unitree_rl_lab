@@ -715,6 +715,13 @@ class KairnLegsAscendPerceptiveEnvCfg(KairnLegsAscendEnvCfg):
             weight=-1.0,
             params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*")},
         )
+        # v6 (2026-11-15): v5 lifted stairs-up only slightly (20 cm 0 -> 7.5%) and its curriculum level
+        # still sits at ~5 while stairs-down/boxes reach ~6. Give stairs-up more columns: taken from
+        # stairs-down (6 vs 5 levels, less needed) and the solved slopes (100% at every difficulty).
+        tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.30
+        tg.sub_terrains["pyramid_stairs"].proportion = 0.15
+        tg.sub_terrains["hf_pyramid_slope"].proportion = 0.025
+        tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.025
 
 
 @configclass
