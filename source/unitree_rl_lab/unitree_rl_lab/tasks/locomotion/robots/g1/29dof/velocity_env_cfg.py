@@ -667,8 +667,9 @@ class PerceptiveObservationsCfg(ObservationsCfg):
 
 @configclass
 class PerceptiveCurriculumCfg(CurriculumCfg):
-    # v4 (2026-11-14): solved-top-row envs wrap to the upper half of the grid, not anywhere (more 18-20 cm stairs)
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_hold_top, params={"wrap_low_frac": 0.5})
+    # v4 (2026-11-14) wrapped solved-top-row envs to the upper half (mdp.terrain_levels_vel_hold_top);
+    # reverted in v5: stairs-up never reaches the top row (mean level ~4.8), so it only helped boxes
+    # and cost stairs-down at d0.8. Default terrain_levels_vel is inherited.
     # report-only: mean terrain level per sub-terrain (must come after terrain_levels)
     terrain_levels_by_type = CurrTerm(func=mdp.terrain_levels_by_sub_terrain)
 
@@ -707,6 +708,13 @@ class KairnLegsAscendPerceptiveEnvCfg(KairnLegsAscendEnvCfg):
         # The clearance target was relative to the torso-area mean ground; use the highest
         # terrain within 15 cm of each foot instead (rewards.foot_clearance_reward_terrain).
         self.rewards.feet_clearance.params["local_radius"] = 0.15
+        # v5 (2026-11-15): stairs-up plateaus at curriculum level ~4.8 (~13 cm) with no torque
+        # saturation; failures trip on the first step. Penalize feet hitting vertical faces.
+        self.rewards.feet_stumble = RewTerm(
+            func=mdp.feet_stumble,
+            weight=-1.0,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*")},
+        )
 
 
 @configclass
