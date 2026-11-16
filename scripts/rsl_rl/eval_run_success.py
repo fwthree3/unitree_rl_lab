@@ -43,6 +43,9 @@ parser.add_argument("--ramp_s", type=float, default=0.0,
 parser.add_argument("--steady_after_s", type=float, default=3.0,
                     help="Steady-state speed excludes the first N s (acceleration from rest).")
 parser.add_argument("--out_csv", type=str, default=None, help="Per-episode CSV path.")
+parser.add_argument("--wrench_csv", type=str, default=None,
+                    help="Record leg/waist joint reaction wrenches (body_incoming_joint_wrench_b) and write per-joint "
+                         "axial/radial force, bending moment and axis torque percentiles to this CSV.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -78,6 +81,64 @@ def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     center = (p + z * z / (2 * n)) / denom
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
     return (center - half, center + half)
+
+
+def env_groups(env_cfg, uenv) -> list[str]:
+    """Per-env group label: starting sub-terrain for --terrain ascend, else 'all'."""
+    if args_cli.terrain != "ascend":
+        return ["all"] * uenv.num_envs
+    import numpy as np
+    tg = env_cfg.scene.terrain.terrain_generator
+    names = list(tg.sub_terrains.keys())
+    props = np.array([c.proportion for c in tg.sub_terrains.values()]); props /= props.sum()
+    col_to_sub = [int(np.min(np.where(c / tg.num_cols + 0.001 < np.cumsum(props))[0])) for c in range(tg.num_cols)]
+    return [names[col_to_sub[c]] for c in uenv.scene.terrain.terrain_types.tolist()]
+
+
+def write_wrench_stats(wr_hist, wr_act, wr_tq, joints, success, groups, robot, path):
+    """Joint reaction wrench stats. The joint axis is the wrench moment component that best matches the applied
+    joint torque (avoids assuming the reporting frame); axial = force along it, radial = force across it,
+    bending = moment across it (all at the joint origin), torque = moment about it."""
+    import numpy as np
+    W = torch.stack(wr_hist)  # T, n, J, 6
+    A = torch.stack(wr_act)  # T, n
+    TQ = torch.stack(wr_tq)  # T, n, J
+    mass = float(robot.data.default_mass[0].sum())
+    print(f"[WRENCH] robot mass {mass:.1f} kg, weight {mass*9.81:.0f} N; {W.shape[0]} steps x {W.shape[1]} envs")
+    act = A.reshape(-1)
+    rows = []
+    comp = {}
+    for j, nm in enumerate(joints):
+        F = W[:, :, j, :3].reshape(-1, 3)[act]; M = W[:, :, j, 3:].reshape(-1, 3)[act]; tq = TQ[:, :, j].reshape(-1)[act]
+        corr = [float(np.corrcoef(M[:, k].numpy(), tq.numpy())[0, 1]) for k in range(3)]
+        k = int(np.argmax(np.abs(corr)))
+        o = [i for i in range(3) if i != k]
+        fit = float((M[:, k].abs().mean() / tq.abs().mean().clamp(min=1e-6)))
+        print(f"[WRENCH] {nm:<26} axis={'xyz'[k]} corr(M_axis, applied torque)={corr[k]:+.3f} |M_axis|/|tau| mean ratio {fit:.2f}")
+        Wj = W[:, :, j, :]
+        comp[nm] = {
+            "axial_N": Wj[..., k].abs(),
+            "radial_N": Wj[..., o].norm(dim=-1),
+            "bending_Nm": Wj[..., [3 + i for i in o]].norm(dim=-1),
+            "torque_Nm": Wj[..., 3 + k].abs(),
+        }
+    grp_names = sorted(set(groups))
+    g_arr = np.array(groups)
+    for g in grp_names:
+        for label, emask in (("success", success.numpy() & (g_arr == g)), ("fail", ~success.numpy() & (g_arr == g))):
+            if not emask.any():
+                continue
+            m = (A & torch.from_numpy(emask).unsqueeze(0))  # T, n
+            for nm in joints:
+                for q, X in comp[nm].items():
+                    v = X[m].numpy()
+                    p50, p99, p999 = np.percentile(v, [50, 99, 99.9]); mx = v.max()
+                    rows.append([g, label, int(emask.sum()), nm, q, f"{p50:.1f}", f"{p99:.1f}", f"{p999:.1f}", f"{mx:.1f}"])
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["group", "episodes", "n_eps", "joint", "quantity", "p50", "p99", "p99.9", "max"])
+        w.writerows(rows)
+    print(f"[WRENCH] stats CSV: {os.path.abspath(path)}")
 
 
 def main():
@@ -162,6 +223,12 @@ def main():
     eff_lim = robot.data.joint_effort_limits[0] if hasattr(robot.data, "joint_effort_limits") else None
     tq_peak = {g: torch.zeros(n, device=device) for g in tq_names}
     tq_sat = {g: torch.zeros(n, device=device) for g in tq_names}
+    # joint reaction wrenches (bearing-load reference): child-link incoming wrench of each leg/waist joint
+    if args_cli.wrench_csv:
+        wj = [j for j in robot.joint_names if any(k in j for k in ("hip", "knee", "ankle", "waist"))]
+        wj_body = [robot.body_names.index("torso_link" if j == "waist_pitch_joint" else j.replace("_joint", "_link")) for j in wj]
+        wj_ids = [robot.joint_names.index(j) for j in wj]
+        wr_hist, wr_act, wr_tq = [], [], []
     # half-extent of the walkable terrain (generated grid + flat border), centered at the origin
     tg = env_cfg.scene.terrain.terrain_generator
     if tg is not None:
@@ -203,6 +270,10 @@ def main():
                     tq_peak[g] = torch.where(active, torch.maximum(tq_peak[g], r_comp), tq_peak[g])
                     tq_sat[g] += torch.where(active, at_lim, 0.0)
 
+            if args_cli.wrench_csv:
+                wr_hist.append(robot.data.body_incoming_joint_wrench_b[:, wj_body, :].float().cpu())
+                wr_act.append(active.cpu())
+                wr_tq.append(robot.data.applied_torque[:, wj_ids].float().cpu())
             obs, _, dones, _ = env.step(actions)
             apply_ramp()
             dones = dones.bool()
@@ -294,6 +365,9 @@ def main():
                             f"{mean_speed[i]:.3f}", f"{flight_frac[i]:.4f}", f"{ss_speed[i]:.3f}",
                             f"{last_xy[i,0]:.2f}", f"{last_xy[i,1]:.2f}", f"{edge_dist[i]:.2f}"])
         print(f"[RESULT] per-episode CSV: {os.path.abspath(args_cli.out_csv)}")
+
+    if args_cli.wrench_csv:
+        write_wrench_stats(wr_hist, wr_act, wr_tq, wj, success.cpu(), env_groups(env_cfg, uenv), robot, args_cli.wrench_csv)
 
     env.close()
 
