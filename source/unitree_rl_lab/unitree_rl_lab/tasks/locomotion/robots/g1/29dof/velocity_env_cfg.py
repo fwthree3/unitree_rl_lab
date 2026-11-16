@@ -734,3 +734,38 @@ class KairnLegsAscendPerceptivePlayEnvCfg(KairnLegsAscendPerceptiveEnvCfg):
         self.scene.terrain.terrain_generator.num_cols = 10
         self.scene.terrain.max_init_terrain_level = None
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# M1b.1/#18 (2026-11-16): plan C -- separate Run and Ascend policies. Every Ascend gain since P005 cost
+# Run speed above 3.6 m/s (65% -> 42% on the 3.0-4.5 m/s ramp eval), so Run stays with P003 (flat-only,
+# 100% to 4.5 m/s) and this task trains Ascend alone: no fast-command band, the -0.5..1.5 m/s cap on
+# every tile, and the flat columns moved to stairs (stairs exposure is what moved the plateau in v6).
+@configclass
+class KairnLegsAscendOnlyEnvCfg(KairnLegsAscendPerceptiveEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.commands.base_velocity.uncapped_fast_prob = 0.0
+        self.commands.base_velocity.uncapped_sub_terrains = ()
+        tg = self.scene.terrain.terrain_generator
+        for name, prop in {
+            "flat": 0.15,
+            "pyramid_stairs": 0.20,
+            "pyramid_stairs_inv": 0.35,
+            "boxes": 0.15,
+            "random_rough": 0.08,
+            "hf_pyramid_slope": 0.035,
+            "hf_pyramid_slope_inv": 0.035,
+        }.items():
+            tg.sub_terrains[name].proportion = prop
+
+
+@configclass
+class KairnLegsAscendOnlyPlayEnvCfg(KairnLegsAscendOnlyEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.terrain_levels_by_type = None
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 5
+        self.scene.terrain.terrain_generator.num_cols = 10
+        self.scene.terrain.max_init_terrain_level = None
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
