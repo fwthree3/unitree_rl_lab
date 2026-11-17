@@ -19,7 +19,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
-from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_KAIRN_LEGS_CFG
+from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_KAIRN_LEGS_CFG, UNITREE_G1_29DOF_KAIRN_LEGS_PANKLE_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -769,3 +769,43 @@ class KairnLegsAscendOnlyPlayEnvCfg(KairnLegsAscendOnlyEnvCfg):
         self.scene.terrain.terrain_generator.num_cols = 10
         self.scene.terrain.max_init_terrain_level = None
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# Parallel ankle (2026-11-17): same tasks with the coupled 2x RS03 ankle actuator, to check how much the coupled
+# torque-speed limit costs (fine-tune P011 for Ascend and P003 for Run). See docs/notes/parallel-ankle-2xrs03-261117.md.
+def _use_parallel_ankle(cfg):
+    cfg.scene.robot = UNITREE_G1_29DOF_KAIRN_LEGS_PANKLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    # diagnostic control: KAIRN_PANKLE_NOCLIP=1 keeps the explicit ankle PD but removes the motor envelope, to
+    # separate the implicit -> explicit PD change from the coupled torque-speed limit itself
+    import os
+    if os.environ.get("KAIRN_PANKLE_NOCLIP") == "1":
+        a = cfg.scene.robot.actuators["ANKLE_2xRS03"]
+        a.motor_peak_torque, a.motor_rated_speed, a.motor_noload_speed = 1e4, 1e4, 2e4
+
+
+@configclass
+class KairnLegsPAnkleEnvCfg(KairnLegsEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_parallel_ankle(self)
+
+
+@configclass
+class KairnLegsPAnklePlayEnvCfg(KairnLegsPlayEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_parallel_ankle(self)
+
+
+@configclass
+class KairnLegsAscendOnlyPAnkleEnvCfg(KairnLegsAscendOnlyEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_parallel_ankle(self)
+
+
+@configclass
+class KairnLegsAscendOnlyPAnklePlayEnvCfg(KairnLegsAscendOnlyPlayEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_parallel_ankle(self)

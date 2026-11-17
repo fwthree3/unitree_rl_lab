@@ -69,3 +69,26 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PerceptivePPORunnerCfg",
     },
 )
+
+# Parallel ankle (2x RS03, coupled) variants of Run (KairnLegs, P003) and Ascend-only (P011)
+gym.register(
+    id="Unitree-G1-29dof-Velocity-KairnLegs-PAnkle",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsPAnkleEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsPAnklePlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Unitree-G1-29dof-Velocity-KairnLegs-AscendOnly-PAnkle",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsAscendOnlyPAnkleEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsAscendOnlyPAnklePlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PerceptivePPORunnerCfg",
+    },
+)

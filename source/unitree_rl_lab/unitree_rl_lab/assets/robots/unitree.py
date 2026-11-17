@@ -554,6 +554,33 @@ UNITREE_G1_29DOF_KAIRN_LEGS_CFG = UNITREE_G1_29DOF_CFG.replace(
     },
 )
 
+# Parallel-ankle variant (2026-11-17, kairn_docs docs/notes/parallel-ankle-2xrs03-261117.md): ankle pitch and
+# roll driven by two coupled RS03s per ankle (2-RSU, kp 0.84 / kr 1.0) instead of serial RS04 pitch + RS03 roll.
+# The ankle group is an explicit PD actuator (the coupled torque-speed clip needs the torque), same gains and
+# armature as before; the PhysX limits are only a safety net above what the motor envelope allows.
+from unitree_rl_lab.assets.robots.kairn_actuators import CoupledAnkleActuatorCfg  # noqa: E402
+
+UNITREE_G1_29DOF_KAIRN_LEGS_PANKLE_CFG = UNITREE_G1_29DOF_KAIRN_LEGS_CFG.replace(
+    actuators={
+        **{k: v for k, v in UNITREE_G1_29DOF_KAIRN_LEGS_CFG.actuators.items() if k not in ("RS04", "RS03")},
+        "RS04": UNITREE_G1_29DOF_KAIRN_LEGS_CFG.actuators["RS04"].replace(
+            joint_names_expr=[".*_hip_pitch_.*", ".*_hip_roll_.*", ".*_hip_yaw_.*", ".*_knee_.*"],
+            stiffness={".*_hip_.*": 100.0, ".*_knee_.*": 150.0},
+            damping={".*_hip_.*": 2.0, ".*_knee_.*": 4.0},
+        ),
+        "ANKLE_2xRS03": CoupledAnkleActuatorCfg(
+            joint_names_expr=[".*_ankle_pitch_.*", ".*_ankle_roll_.*"],
+            effort_limit=200.0,
+            effort_limit_sim=200.0,
+            velocity_limit=30.0,
+            velocity_limit_sim=30.0,
+            stiffness=40.0,
+            damping=2.0,
+            armature=0.01,
+        ),
+    },
+)
+
 
 ARMATURE_5020 = 0.003609725
 ARMATURE_7520_14 = 0.010177520
