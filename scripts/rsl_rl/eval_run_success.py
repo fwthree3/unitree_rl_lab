@@ -46,6 +46,10 @@ parser.add_argument("--out_csv", type=str, default=None, help="Per-episode CSV p
 parser.add_argument("--wrench_csv", type=str, default=None,
                     help="Record leg/waist joint reaction wrenches (body_incoming_joint_wrench_b) and write per-joint "
                          "axial/radial force, bending moment and axis torque percentiles to this CSV.")
+parser.add_argument("--ankle_npz", type=str, default=None,
+                    help="Save per-step ankle pitch/roll joint position, velocity, applied torque and the ankle_roll_link incoming "
+                         "joint wrench (child-body frame; both legs) plus "
+                         "per-episode success/group to this .npz (parallel-ankle actuator sizing).")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -229,6 +233,11 @@ def main():
         wj_body = [robot.body_names.index("torso_link" if j == "waist_pitch_joint" else j.replace("_joint", "_link")) for j in wj]
         wj_ids = [robot.joint_names.index(j) for j in wj]
         wr_hist, wr_act, wr_tq = [], [], []
+    if args_cli.ankle_npz:
+        aj = [f"{s}_ankle_{a}_joint" for s in ("left", "right") for a in ("pitch", "roll")]
+        aj_ids = [robot.joint_names.index(j) for j in aj]
+        ab_ids = [robot.body_names.index(f"{s}_ankle_roll_link") for s in ("left", "right")]
+        an_q, an_v, an_t, an_act, an_w = [], [], [], [], []
     # half-extent of the walkable terrain (generated grid + flat border), centered at the origin
     tg = env_cfg.scene.terrain.terrain_generator
     if tg is not None:
@@ -274,6 +283,12 @@ def main():
                 wr_hist.append(robot.data.body_incoming_joint_wrench_b[:, wj_body, :].float().cpu())
                 wr_act.append(active.cpu())
                 wr_tq.append(robot.data.applied_torque[:, wj_ids].float().cpu())
+            if args_cli.ankle_npz:
+                an_q.append(robot.data.joint_pos[:, aj_ids].float().cpu())
+                an_v.append(robot.data.joint_vel[:, aj_ids].float().cpu())
+                an_t.append(robot.data.applied_torque[:, aj_ids].float().cpu())
+                an_act.append(active.cpu())
+                an_w.append(robot.data.body_incoming_joint_wrench_b[:, ab_ids, :].float().cpu())
             obs, _, dones, _ = env.step(actions)
             apply_ramp()
             dones = dones.bool()
@@ -368,6 +383,15 @@ def main():
 
     if args_cli.wrench_csv:
         write_wrench_stats(wr_hist, wr_act, wr_tq, wj, success.cpu(), env_groups(env_cfg, uenv), robot, args_cli.wrench_csv)
+
+    if args_cli.ankle_npz:
+        import numpy as np
+        np.savez_compressed(args_cli.ankle_npz, joints=np.array(aj), dt=dt,
+                            q=torch.stack(an_q).numpy(), qd=torch.stack(an_v).numpy(), tau=torch.stack(an_t).numpy(),
+                            foot_wrench=torch.stack(an_w).numpy(),
+                            active=torch.stack(an_act).numpy(), success=success.cpu().numpy(),
+                            group=np.array(env_groups(env_cfg, uenv)), commanded=commanded.cpu().numpy())
+        print(f"[RESULT] ankle trace: {os.path.abspath(args_cli.ankle_npz)}")
 
     env.close()
 
