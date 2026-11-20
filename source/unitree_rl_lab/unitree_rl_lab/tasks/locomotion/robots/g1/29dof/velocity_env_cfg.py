@@ -771,6 +771,28 @@ class KairnLegsAscendOnlyPlayEnvCfg(KairnLegsAscendOnlyEnvCfg):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
 
 
+# M1b.1/#18 (2026-11-18): taller stairs. P011 reaches 88% on 20 cm stairs-up; skill-targets.md's reference
+# ceiling is ~40 cm. Same task with the stair step range raised from 5-20 cm to 5-30 cm (up and down), so
+# difficulty d maps to 5 + 25*d cm (20 cm = d0.6, 25 cm = d0.8, 30 cm = d1.0). Boxes/slopes unchanged.
+@configclass
+class KairnLegsAscendOnlyTallEnvCfg(KairnLegsAscendOnlyEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _tall_stairs(self)
+
+
+@configclass
+class KairnLegsAscendOnlyTallPlayEnvCfg(KairnLegsAscendOnlyPlayEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _tall_stairs(self)
+
+
+def _tall_stairs(cfg, max_step=0.30):
+    for name in ("pyramid_stairs", "pyramid_stairs_inv"):
+        cfg.scene.terrain.terrain_generator.sub_terrains[name].step_height_range = (0.05, max_step)
+
+
 # Parallel ankle (2026-11-17): same tasks with the coupled 2x RS03 ankle actuator, to check how much the coupled
 # torque-speed limit costs (fine-tune P011 for Ascend and P003 for Run). See docs/notes/parallel-ankle-2xrs03-261117.md.
 def _use_parallel_ankle(cfg):
