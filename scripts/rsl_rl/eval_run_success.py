@@ -30,7 +30,7 @@ parser.add_argument("--cmd_min", type=float, default=2.5, help="Min forward comm
 parser.add_argument("--cmd_max", type=float, default=3.0, help="Max forward command (m/s).")
 parser.add_argument("--no_push", action="store_true", help="Disable interval pushes (diagnostic only, not the criterion).")
 parser.add_argument("--difficulty", type=float, default=0.5,
-                    help="--terrain ascend only: every tile at this difficulty (0-1; stairs 5->20 cm, slopes 0->0.4 rad).")
+                    help="--terrain ascend only: every tile at this difficulty (0-1; stairs 5->20 cm on the Ascend tasks, 5->30 cm on -Tall; slopes 0->0.4 rad).")
 parser.add_argument("--terrain", choices=["plane", "generator", "ascend", "flatgrid"], default="plane",
                     help="plane (default): infinite flat ground plane, so a 20 s run at 3 m/s cannot leave the map. "
                          "generator: the training terrain grid (all-flat tiles, ~112x208 m) -- running off its edge "
@@ -46,6 +46,9 @@ parser.add_argument("--out_csv", type=str, default=None, help="Per-episode CSV p
 parser.add_argument("--wrench_csv", type=str, default=None,
                     help="Record leg/waist joint reaction wrenches (body_incoming_joint_wrench_b) and write per-joint "
                          "axial/radial force, bending moment and axis torque percentiles to this CSV.")
+parser.add_argument("--legs_npz", type=str, default=None,
+                    help="Save per-step traces of all 12 leg joints (q, qd, applied/computed torque, limits), foot positions "
+                         "and contact forces, and the root position (failure diagnosis, M1b.1 tall stairs).")
 parser.add_argument("--ankle_npz", type=str, default=None,
                     help="Save per-step ankle pitch/roll joint position, velocity, applied torque and the ankle_roll_link incoming "
                          "joint wrench (child-body frame; both legs) plus "
@@ -238,6 +241,12 @@ def main():
         aj_ids = [robot.joint_names.index(j) for j in aj]
         ab_ids = [robot.body_names.index(f"{s}_ankle_roll_link") for s in ("left", "right")]
         an_q, an_v, an_t, an_act, an_w = [], [], [], [], []
+    if args_cli.legs_npz:
+        lj = [j for j in robot.joint_names if any(k in j for k in ("hip", "knee", "ankle"))]
+        lj_ids = [robot.joint_names.index(j) for j in lj]
+        lf_ids = [robot.body_names.index(f"{s}_ankle_roll_link") for s in ("left", "right")]
+        lf_sids, _ = contact_sensor.find_bodies(".*ankle_roll.*")
+        lg = {k: [] for k in ("q", "qd", "tau", "tau_cmd", "foot_pos", "foot_force", "root_pos", "root_quat", "active")}
     # half-extent of the walkable terrain (generated grid + flat border), centered at the origin
     tg = env_cfg.scene.terrain.terrain_generator
     if tg is not None:
@@ -283,6 +292,16 @@ def main():
                 wr_hist.append(robot.data.body_incoming_joint_wrench_b[:, wj_body, :].float().cpu())
                 wr_act.append(active.cpu())
                 wr_tq.append(robot.data.applied_torque[:, wj_ids].float().cpu())
+            if args_cli.legs_npz:
+                lg["q"].append(robot.data.joint_pos[:, lj_ids].float().cpu())
+                lg["qd"].append(robot.data.joint_vel[:, lj_ids].float().cpu())
+                lg["tau"].append(robot.data.applied_torque[:, lj_ids].float().cpu())
+                lg["tau_cmd"].append(robot.data.computed_torque[:, lj_ids].float().cpu())
+                lg["foot_pos"].append((robot.data.body_pos_w[:, lf_ids] - uenv.scene.env_origins[:, None]).float().cpu())
+                lg["foot_force"].append(contact_sensor.data.net_forces_w[:, lf_sids].float().cpu())
+                lg["root_pos"].append((robot.data.root_pos_w - uenv.scene.env_origins).float().cpu())
+                lg["root_quat"].append(robot.data.root_quat_w.float().cpu())
+                lg["active"].append(active.cpu())
             if args_cli.ankle_npz:
                 an_q.append(robot.data.joint_pos[:, aj_ids].float().cpu())
                 an_v.append(robot.data.joint_vel[:, aj_ids].float().cpu())
@@ -383,6 +402,18 @@ def main():
 
     if args_cli.wrench_csv:
         write_wrench_stats(wr_hist, wr_act, wr_tq, wj, success.cpu(), env_groups(env_cfg, uenv), robot, args_cli.wrench_csv)
+
+    if args_cli.legs_npz:
+        import numpy as np
+        np.savez_compressed(args_cli.legs_npz, joints=np.array(lj), dt=dt,
+                            **{k: torch.stack(v).numpy() for k, v in lg.items()},
+                            pos_limits=robot.data.joint_pos_limits[0, lj_ids].cpu().numpy(),
+                            soft_pos_limits=robot.data.soft_joint_pos_limits[0, lj_ids].cpu().numpy(),
+                            effort_limits=eff_lim[lj_ids].cpu().numpy(),
+                            vel_limits=robot.data.joint_vel_limits[0, lj_ids].cpu().numpy(),
+                            success=success.cpu().numpy(), ep_len_s=ep_len_s.cpu().numpy(),
+                            group=np.array(env_groups(env_cfg, uenv)), commanded=commanded.cpu().numpy())
+        print(f"[RESULT] leg trace: {os.path.abspath(args_cli.legs_npz)}")
 
     if args_cli.ankle_npz:
         import numpy as np
