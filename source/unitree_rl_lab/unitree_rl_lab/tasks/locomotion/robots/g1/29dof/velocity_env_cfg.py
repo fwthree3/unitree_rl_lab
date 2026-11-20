@@ -831,3 +831,44 @@ class KairnLegsAscendOnlyPAnklePlayEnvCfg(KairnLegsAscendOnlyPlayEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         _use_parallel_ankle(self)
+
+
+# M1.5 bridge (2026-11-19): same tasks on a generated KAIRN-legs model (scripts/kairn_model/gen_legs.py). Select the
+# model with the KAIRN_MODEL env var (a folder name under KAIRN_MODEL_DIR; default g1_identity = stock G1 lengths, the
+# sanity check). Standing-height targets shift by the model's pelvis rise dz.
+def _use_kairn_model(cfg):
+    import os
+
+    from unitree_rl_lab.assets.robots.unitree import kairn_legs_param_cfg
+
+    robot, meta = kairn_legs_param_cfg(os.environ.get("KAIRN_MODEL", "g1_identity"))
+    cfg.scene.robot = robot.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    cfg.rewards.base_height.params["target_height"] += meta["dz"]
+
+
+@configclass
+class KairnLegsParamEnvCfg(KairnLegsEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_kairn_model(self)
+
+
+@configclass
+class KairnLegsParamPlayEnvCfg(KairnLegsPlayEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_kairn_model(self)
+
+
+@configclass
+class KairnLegsAscendOnlyParamEnvCfg(KairnLegsAscendOnlyEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_kairn_model(self)
+
+
+@configclass
+class KairnLegsAscendOnlyParamPlayEnvCfg(KairnLegsAscendOnlyPlayEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _use_kairn_model(self)

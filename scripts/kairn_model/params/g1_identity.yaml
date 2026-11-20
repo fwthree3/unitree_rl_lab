@@ -1,0 +1,2 @@
+# Sanity check: G1 lengths and masses unchanged. The generated model must behave like the stock KairnLegs model.
+name: g1_identity

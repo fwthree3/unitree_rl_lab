@@ -1,0 +1,12 @@
+# Example: what a bulkier RS04/RS03 package might do. Thigh +40 mm, shank +30 mm, heavier hip-yaw (thigh) and knee
+# (shank) links. Replace the numbers with the M3.2 CAD values (SOLIDWORKS mass properties: mass in kg, COM in m in
+# the link frame, left side; the right side is mirrored).
+name: example_longer_legs
+thigh_length: 0.381     # hip pitch axis -> knee axis (G1: 0.341)
+shank_length: 0.330     # knee axis -> ankle pitch axis (G1: 0.300)
+link_mass:              # kg, per side (G1: hip_yaw_link 1.702, knee_link 1.932)
+  hip_yaw_link: 2.1
+  knee_link: 2.2
+# link_com:             # optional, m, left-side link frame
+#   knee_link: [0.005, 0.004, -0.13]
+# pelvis_mass: 3.813

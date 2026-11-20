@@ -103,3 +103,25 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PerceptivePPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Unitree-G1-29dof-Velocity-KairnLegs-Param",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsParamEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsParamPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Unitree-G1-29dof-Velocity-KairnLegs-AscendOnly-Param",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsAscendOnlyParamEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg:KairnLegsAscendOnlyParamPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PerceptivePPORunnerCfg",
+    },
+)
