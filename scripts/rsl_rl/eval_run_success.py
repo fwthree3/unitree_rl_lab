@@ -46,6 +46,11 @@ parser.add_argument("--out_csv", type=str, default=None, help="Per-episode CSV p
 parser.add_argument("--wrench_csv", type=str, default=None,
                     help="Record leg/waist joint reaction wrenches (body_incoming_joint_wrench_b) and write per-joint "
                          "axial/radial force, bending moment and axis torque percentiles to this CSV.")
+parser.add_argument("--zmp_npz", type=str, default=None,
+                    help="Save per-step whole-body state for ZMP analysis (CoM pos/vel/acc, angular-momentum rate, sole "
+                         "corners, foot contact, base tilt/ang-vel) -- fall-prediction study, analysis only.")
+parser.add_argument("--push_scale", type=float, default=1.0,
+                    help="Scale the interval-push velocity range (diagnostic: >1 induces falls for fall-prediction data).")
 parser.add_argument("--legs_npz", type=str, default=None,
                     help="Save per-step traces of all 12 leg joints (q, qd, applied/computed torque, limits), foot positions "
                          "and contact forces, and the root position (failure diagnosis, M1b.1 tall stairs).")
@@ -184,6 +189,10 @@ def main():
         env_cfg.scene.terrain.max_init_terrain_level = tg.num_rows - 1
     if args_cli.no_push:
         env_cfg.events.push_robot = None
+    elif args_cli.push_scale != 1.0 and env_cfg.events.push_robot is not None:
+        vr = env_cfg.events.push_robot.params["velocity_range"]
+        env_cfg.events.push_robot.params["velocity_range"] = {k: (lo * args_cli.push_scale, hi * args_cli.push_scale)
+                                                             for k, (lo, hi) in vr.items()}
 
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
@@ -241,6 +250,13 @@ def main():
         aj_ids = [robot.joint_names.index(j) for j in aj]
         ab_ids = [robot.body_names.index(f"{s}_ankle_roll_link") for s in ("left", "right")]
         an_q, an_v, an_t, an_act, an_w = [], [], [], [], []
+    if args_cli.zmp_npz:
+        from unitree_rl_lab.tasks.locomotion.mdp.zmp_state import foot_corners_world, whole_body_state
+        zf_ids = [robot.body_names.index(f"{s}_ankle_roll_link") for s in ("left", "right")]
+        zf_sids, _ = contact_sensor.find_bodies(".*ankle_roll.*")
+        zk = {k: [] for k in ("com", "com_vel", "com_acc", "l_dot", "corners", "foot_force", "proj_grav", "ang_vel_b",
+                              "root_pos", "active")}
+        z_mass = None
     if args_cli.legs_npz:
         lj = [j for j in robot.joint_names if any(k in j for k in ("hip", "knee", "ankle"))]
         lj_ids = [robot.joint_names.index(j) for j in lj]
@@ -292,6 +308,18 @@ def main():
                 wr_hist.append(robot.data.body_incoming_joint_wrench_b[:, wj_body, :].float().cpu())
                 wr_act.append(active.cpu())
                 wr_tq.append(robot.data.applied_torque[:, wj_ids].float().cpu())
+            if args_cli.zmp_npz:
+                wb = whole_body_state(robot)
+                org = uenv.scene.env_origins
+                zk["com"].append((wb["com"] - org).float().cpu()); zk["com_vel"].append(wb["com_vel"].float().cpu())
+                zk["com_acc"].append(wb["com_acc"].float().cpu()); zk["l_dot"].append(wb["l_dot"].float().cpu())
+                zk["corners"].append((foot_corners_world(robot, zf_ids) - org[:, None, None]).float().cpu())
+                zk["foot_force"].append(contact_sensor.data.net_forces_w[:, zf_sids].float().cpu())
+                zk["proj_grav"].append(robot.data.projected_gravity_b.float().cpu())
+                zk["ang_vel_b"].append(robot.data.root_ang_vel_b.float().cpu())
+                zk["root_pos"].append((robot.data.root_pos_w - org).float().cpu())
+                zk["active"].append(active.cpu())
+                z_mass = wb["mass"].float().cpu()
             if args_cli.legs_npz:
                 lg["q"].append(robot.data.joint_pos[:, lj_ids].float().cpu())
                 lg["qd"].append(robot.data.joint_vel[:, lj_ids].float().cpu())
@@ -402,6 +430,14 @@ def main():
 
     if args_cli.wrench_csv:
         write_wrench_stats(wr_hist, wr_act, wr_tq, wj, success.cpu(), env_groups(env_cfg, uenv), robot, args_cli.wrench_csv)
+
+    if args_cli.zmp_npz:
+        import numpy as np
+        np.savez_compressed(args_cli.zmp_npz, dt=dt, mass=z_mass.numpy(),
+                            **{k: torch.stack(v).numpy() for k, v in zk.items()},
+                            success=success.cpu().numpy(), ep_len_s=ep_len_s.cpu().numpy(),
+                            group=np.array(env_groups(env_cfg, uenv)), commanded=commanded.cpu().numpy())
+        print(f"[RESULT] zmp trace: {os.path.abspath(args_cli.zmp_npz)}")
 
     if args_cli.legs_npz:
         import numpy as np
